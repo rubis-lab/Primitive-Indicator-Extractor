@@ -5,8 +5,7 @@ Input directory layout example:
   /data_248/pdss/hospital_data/YYYYMMDD/<client_id>/<task>/<sensor>/<uuid>/keyboard.csv
 
 Output directory:
-  <output_root>/<client_id>/<task>/keyboard_pi.json
-  default output_root = <parent_of_hospital_data>/primitive_indicator
+  <output_base_path>/<client_id>/<task>/keyboard_pi.json
 
 Notes:
 - If multiple keyboard.csv exist for the same (client_id, task), this path will be overwritten.
@@ -33,13 +32,13 @@ from tqdm import tqdm
 # Parameters
 # =========================
 
-# Screen size 
+# Screen size (default)
 SCREEN_WIDTH_PX = 1440
 SCREEN_HEIGHT_PX = 900
 
 # Windowing parameters
-WINDOW_SIZE_SEC = 60.0   # default: 60s
-STRIDE_SEC = 30.0        # default: 30s
+WINDOW_SIZE_SEC = 60.0  # default: 60s
+STRIDE_SEC = 30.0       # default: 30s
 
 # Keyboard PI-specific
 PAUSE_THRESHOLD_MS = 2000.0  # θ_pause
@@ -118,6 +117,7 @@ BASE_INDICATOR_NAMES = [
 ]
 STATS = ("mean", "std", "min", "max")
 
+
 def to_snake(name: str) -> str:
     s = name.strip().lower()
     s = s.replace("rouge-l", "rouge_l")
@@ -125,11 +125,13 @@ def to_snake(name: str) -> str:
     s = re.sub(r"_+", "_", s).strip("_")
     return s
 
+
 SNAKE_BASES = [to_snake(n) for n in BASE_INDICATOR_NAMES]
 
 # =========================
 # Key normalization / categories
 # =========================
+
 CTRL_SET = {"CTRL", "CONTROL", "CONTROLLEFT", "CONTROLRIGHT", "CTRLL", "CTRLR"}
 SHIFT_SET = {"SHIFT", "SHIFTLEFT", "SHIFTRIGHT"}
 ALT_SET = {"ALT", "ALTLEFT", "ALTRIGHT", "OPTION"}
@@ -254,6 +256,7 @@ class WindowParams:
     pause_threshold_ms: float = PAUSE_THRESHOLD_MS
     ngram_n: int = NGRAM_N
 
+
 # =========================
 # Hold-time pairing (split KEY_DOWN / KEY_UP)
 # =========================
@@ -298,6 +301,7 @@ def pair_key_events_stack(
 
     out = pd.DataFrame(out_rows, columns=["token", "down_dt", "up_dt", "hold_ms"])
     return out
+
 
 # =========================
 # Feature computation per window
@@ -350,7 +354,8 @@ def compute_keyboard_pi_for_window(
 
         overlap_ms = (np.maximum(
             0.0,
-            (up.iloc[:-1].to_numpy() - down.iloc[1:].to_numpy()).astype("timedelta64[ns]").astype(np.int64) / 1e6
+            (up.iloc[:-1].to_numpy() - down.iloc[1:].to_numpy())
+            .astype("timedelta64[ns]").astype(np.int64) / 1e6
         )).tolist()
 
         fill_pi_stats(pi, to_snake("Down-Down Interval"), dd_ms)
@@ -669,8 +674,8 @@ def ensure_dir(p: str) -> None:
     os.makedirs(p, exist_ok=True)
 
 
-def default_output_root_from_hospital(root_dir: str) -> str:
-    parent = os.path.dirname(os.path.abspath(root_dir))
+def default_output_root_from_hospital(base_path: str) -> str:
+    parent = os.path.dirname(os.path.abspath(base_path))
     return os.path.join(parent, "primitive_indicator")
 
 
@@ -690,14 +695,16 @@ def make_output_path(
 
 def process_one_keyboard_csv(
     csv_path: str,
-    root_dir: str,
+    base_path: str,
     output_root: str,
     template_obj: dict,
     params: WindowParams,
     holdtime_mode: str,
+    screen_width_px: int,
+    screen_height_px: int,
 ) -> Optional[str]:
     try:
-        _, client_id, task, _ = parse_path_components(root_dir, csv_path)
+        _, client_id, task, _ = parse_path_components(base_path, csv_path)
         df = read_keyboard_csv(csv_path, holdtime_mode=holdtime_mode)
     except Exception:
         return None
@@ -711,9 +718,9 @@ def process_one_keyboard_csv(
     out_obj["context"] = task
     out_obj["sensor_modality"] = "keyboard"
     out_obj["screen"] = {
-        "width": float(SCREEN_WIDTH_PX),
-        "height": float(SCREEN_HEIGHT_PX),
-        }
+        "width": float(screen_width_px),
+        "height": float(screen_height_px),
+    }
     out_obj["windows"] = []
 
     for idx, (w_start, w_end) in enumerate(windows, start=1):
@@ -732,19 +739,39 @@ def process_one_keyboard_csv(
 
     return out_path
 
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root_dir", required=True, help="hospital_data root, e.g. /data_248/pdss/hospital_data")
+
+    src_group = ap.add_mutually_exclusive_group(required=True)
+    src_group.add_argument(
+        "--base_path",
+        help="hospital_data root, e.g. /data_248/pdss/hospital_data",
+    )
+    src_group.add_argument(
+        "--root_dir",
+        help="(deprecated) alias of --base_path",
+    )
+
     ap.add_argument(
-        "--output_root",
+        "--output_base_path",
         default=None,
         help="Output root directory. Default: <parent_of_hospital_data>/primitive_indicator",
+    )
+    ap.add_argument(
+        "--output_root",
+        dest="output_base_path",
+        default=None,
+        help=argparse.SUPPRESS,
     )
 
     ap.add_argument("--window_size_sec", type=float, default=WINDOW_SIZE_SEC)
     ap.add_argument("--stride_sec", type=float, default=STRIDE_SEC)
     ap.add_argument("--pause_threshold_ms", type=float, default=PAUSE_THRESHOLD_MS)
     ap.add_argument("--ngram_n", type=int, default=NGRAM_N)
+
+    ap.add_argument("--screen_width_px", type=int, default=SCREEN_WIDTH_PX)
+    ap.add_argument("--screen_height_px", type=int, default=SCREEN_HEIGHT_PX)
 
     ap.add_argument(
         "--holdtime_mode",
@@ -753,16 +780,18 @@ def main():
         help="paired_rows: current KEY_DOWN_UP rows. event_pairing: pair KEY_DOWN/KEY_UP. auto: try paired_rows then pairing.",
     )
 
-    # keep: one-student filter
     ap.add_argument("--only_client_id", default=None, help="If set, process only this client_id")
 
     args = ap.parse_args()
+
+    base_path = args.base_path or args.root_dir
+    output_root = args.output_base_path or default_output_root_from_hospital(base_path)
 
     params = WindowParams(
         window_size_sec=args.window_size_sec,
         stride_sec=args.stride_sec,
         pause_threshold_ms=args.pause_threshold_ms,
-        ngram_n=args.ngram_n
+        ngram_n=args.ngram_n,
     )
 
     def make_template_obj() -> dict:
@@ -775,9 +804,7 @@ def main():
 
     template_obj = make_template_obj()
 
-    output_root = args.output_root or default_output_root_from_hospital(args.root_dir)
-
-    csv_paths_all = iter_keyboard_csv_paths(args.root_dir)
+    csv_paths_all = iter_keyboard_csv_paths(base_path)
     if not csv_paths_all:
         print("[DONE] No keyboard.csv found.")
         return
@@ -786,7 +813,7 @@ def main():
     client_ids = set()
     for p in csv_paths_all:
         try:
-            _, client_id, _, _ = parse_path_components(args.root_dir, p)
+            _, client_id, _, _ = parse_path_components(base_path, p)
         except Exception:
             continue
         if args.only_client_id is not None and client_id != args.only_client_id:
@@ -795,23 +822,26 @@ def main():
         client_ids.add(client_id)
 
     print(f"[INFO] clients={len(client_ids)} csv_files={len(csv_paths)}")
-    print(f"[INFO] SCREEN: {SCREEN_WIDTH_PX}x{SCREEN_HEIGHT_PX} (px)")
+    print(f"[INFO] SCREEN: {args.screen_width_px}x{args.screen_height_px} (px)")
     print(f"[INFO] window_size={params.window_size_sec}s stride={params.stride_sec}s output_root={output_root}")
 
     ok = 0
     for p in tqdm(csv_paths, desc="keyboard.csv -> keyboard_pi.json", unit="file"):
         out_path = process_one_keyboard_csv(
             csv_path=p,
-            root_dir=args.root_dir,
+            base_path=base_path,
             output_root=output_root,
             template_obj=template_obj,
             params=params,
             holdtime_mode=args.holdtime_mode,
+            screen_width_px=args.screen_width_px,
+            screen_height_px=args.screen_height_px,
         )
         if out_path:
             ok += 1
 
     print(f"[DONE] processed={ok} / total={len(csv_paths)}")
+
 
 if __name__ == "__main__":
     main()

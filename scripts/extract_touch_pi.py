@@ -7,8 +7,9 @@ Input directory layout example:
 Output directory:
   /data_248/pdss/primitive_indicator/<client_id>/<task>/touch_pi.json
 
-각 stylus.csv 에 대해 windowing을 수행하고,
-84개 feature × 4개 통계량(mean, std, min, max)을 JSON에 기록.
+각 stylus.csv 를 읽어서 윈도우 단위로 Primitive Indicator 계산하고,
+84개(FEATURE_NAMES) × 통계량 4개(STATS)을 JSON 형태로 저장
+
 """
 
 from __future__ import annotations
@@ -1449,8 +1450,8 @@ def main():
 
     args = ap.parse_args()
 
-    if args.csv_path is None and args.base_path is None:
-        raise ValueError("--base_path 와 --csv_path 는 반드시 지정해야 합니다.")
+    if args.output_base_path is None and args.base_path is None:
+        raise ValueError("--base_path 와 --output_base_path 는 반드시 지정해야 합니다.")
 
     params = WindowParams(
         window_size_sec=float(args.window_size_sec),

@@ -32,11 +32,13 @@ Dependencies:
   (optional) scipy for convex hull. If scipy is missing, hull area/perimeter become 0.
 
 Example:
-  python extract_eye_pi.py \
-    --input_csv sample.csv \
-    --output_json out.json \
-    --pi_excel "Primitive Indicator.xlsx" \
-    --window_size 60 --stride 30
+    python /data_248/pdss/primitive_indicator_scripts/scripts/extract_eye-tracking_pi.py \
+    --base_path /data_248/pdss/hospital_data/ \
+    --output_base_path /data_248/pdss/primitive_indicator \
+    --window_size_sec 60 \
+    --stride_sec 30 \
+    --screen_width_px 1440 \
+    --screen_height_px 900
 """
 
 from __future__ import annotations
@@ -98,6 +100,110 @@ CENTER_REGION_PCT = 0.50  # center rectangle width/height is this fraction of sc
 # Direction-related
 SACCADE_AXIS_THR_RAD = math.radians(15.0)  # horizontal/vertical classification
 BACKTRACK_TAU_RAD = math.radians(20.0)     # for "backtrack" definition
+
+
+
+# =========================
+# Indicator list (93 × 4 stats)
+# =========================
+# - Excel의 "Name" 컬럼을 그대로 사용하고,
+# - 실제 key는 keyify(name)로 snake_case 변환 + 통계량 suffix("_mean" 등)을 붙여 생성한다.
+# - "ScanMatch Similarity"는 아직 구현되지 않았으므로 제외.
+FEATURE_NAMES = [
+    "Gaze Position X",
+    "Gaze Position Y",
+    "Gaze Velocity",
+    "Gaze Velocity X",
+    "Gaze Velocity Y",
+    "Gaze Acceleration",
+    "Gaze Acceleration X",
+    "Gaze Acceleration Y",
+    "Gaze Jerk",
+    "Gaze Jerk X",
+    "Gaze Jerk Y",
+    "Gaze Path Length",
+    "Gaze Path Displacement",
+    "Gaze Path Curvature",
+    "Fixation Rate",
+    "Fixation Duration",
+    "Fixation Bbox Width",
+    "Fixation Bbox Height",
+    "Fixation Bbox Aspect Ratio",
+    "Range-based Fixation Dispersion",
+    "RMS-based Fixation Dispersion",
+    "Bbox Area-based Fixation Dispersion",
+    "Fixation Entropy",
+    "Saccade Rate",
+    "Saccade Duration",
+    "Saccade Bbox Width",
+    "Saccade Bbox Height",
+    "Saccade Bbox Aspect Ratio",
+    "Range-based Saccade Dispersion",
+    "RMS-based Saccade Dispersion",
+    "Bbox Area-based Saccade Dispersion",
+    "Saccade Entropy",
+    "Saccade Displacement",
+    "Saccade Velocity",
+    "Saccade Velocity X",
+    "Saccade Velocity Y",
+    "Saccade Acceleration",
+    "Saccade Acceleration X",
+    "Saccade Acceleration Y",
+    "Saccade Jerk",
+    "Saccade Jerk X",
+    "Saccade Jerk Y",
+    "First Saccade Latency",
+    "First Saccade Duration",
+    "Saccade Direction",
+    "Saccade Angular Velocity",
+    "Saccade Path Length",
+    "Saccade Path Curvature",
+    "Range-based Saccade Endpoint Dispersion",
+    "RMS-based Saccade Endpoint Dispersion",
+    "Bbox Area-based Saccade Endpoint Dispersion",
+    "Saccade Endpoint Covariance",
+    "First Fixation Latency",
+    "First Fixation Duration",
+    "On-screen Duration",
+    "On-screen Gaze Ratio",
+    "Off-screen Duration",
+    "Off-screen Gaze Ratio",
+    "Gaze Bbox Width",
+    "Gaze Bbox Height",
+    "Gaze Bbox Aspect Ratio",
+    "Range-based Gaze Dispersion",
+    "RMS-based Gaze Dispersion",
+    "Bbox Area-based Gaze Dispersion",
+    "Gaze Covariance",
+    "Gaze Entropy",
+    "Horizontal Saccade Rate",
+    "Vertical Saccade Rate",
+    "Edge Gaze Ratio",
+    "Left-half Gaze Ratio",
+    "Right-half Gaze Ratio",
+    "Top-half Gaze Ratio",
+    "Bottom-half Gaze Ratio",
+    "Central Gaze Ratio",
+    "Range-based Fixation Centroid Dispersion",
+    "RMS-based Fixation Centroid Dispersion",
+    "Bbox Area-based Fixation Centroid Dispersion",
+    "Fixation Centroid Covariance",
+    "Fixation Convex Hull Area",
+    "Fixation Convex Hull Perimeter",
+    "Fixational Drift Velocity",
+    "Fixational Drift Velocity X",
+    "Fixational Drift Velocity Y",
+    "Scanpath Fractal Dimension",
+    "Scanpath Revisit Ratio",
+    "Scanpath Determinism Ratio",
+    "Fixation-Saccade Ratio",
+    "Inter-fixation Interval",
+    "Inter-saccade Interval",
+    "Gaze Offset to Screen Center",
+    "Central Bias",
+    "Backtrack Saccade Rate",
+    "Backtrack Saccade Ratio",
+]
 
 
 # =========================
@@ -445,14 +551,6 @@ def ms_to_iso(ms: int, tz_name: str = "Asia/Seoul") -> str:
     dt = datetime.fromtimestamp(ms / 1000.0, tz=tz)
     s = dt.isoformat(timespec="microseconds")
     return s.replace("+09:00", "+09")
-
-
-def load_pi_names_from_excel(pi_excel_path: str, sheet_name: str = "eye-tracking") -> List[str]:
-    df = pd.read_excel(pi_excel_path, sheet_name=sheet_name)
-    names = [str(n) for n in df["Name"].dropna().tolist()]
-    # defensively drop if present
-    names = [n for n in names if n.strip().lower() != "scanmatch similarity"]
-    return names
 
 
 def compute_window_base_vectors(
@@ -915,8 +1013,6 @@ def process_one_file(
     timezone_name: str,
     screen_w: float,
     screen_h: float,
-    pi_excel: str,
-    pi_sheet: str,
     window_size_s: float,
     stride_s: float,
 ) -> None:
@@ -929,13 +1025,8 @@ def process_one_file(
     df["timestamp"] = parse_timestamp_column(df["timestamp"])
     df = df.sort_values("timestamp").reset_index(drop=True)
 
-    # Load PI names from Excel (fallback: if excel missing -> use computed base keys)
-    if pi_excel and os.path.exists(pi_excel):
-        pi_names = load_pi_names_from_excel(pi_excel, sheet_name=pi_sheet)
-    else:
-        pi_names = []
-        print(f"[WARN] PI Excel not found at '{pi_excel}'. Will auto-use computed base keys per window. (file={input_csv})")
-
+    pi_names = FEATURE_NAMES
+    
     window_ms = int(round(window_size_s * 1000.0))
     stride_ms = int(round(stride_s * 1000.0))
 
@@ -976,11 +1067,14 @@ def process_one_file(
             }
         )
 
-    os.makedirs(os.path.dirname(output_json), exist_ok=True)
+    out_dir = os.path.dirname(output_json)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+        
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(out_obj, f, ensure_ascii=False, indent=2)
 
-    print(f"[OK] {client_id}/{context} -> {output_json}  (windows={len(windows)})")
+    print(f"[OK] {client_id}/{context} -> {output_json}  (windows={len(out_obj['windows'])})")
 
 
 
@@ -1040,12 +1134,10 @@ def run_batch_mode(args) -> None:
             context=task,  # task를 곧바로 context로 사용
             sensor_modality="eye-tracking",
             timezone_name=args.timezone,
-            screen_w=float(args.screen_width),
-            screen_h=float(args.screen_height),
-            pi_excel=args.pi_excel,
-            pi_sheet=args.pi_sheet,
-            window_size_s=args.window_size,
-            stride_s=args.stride,
+            screen_w=float(args.screen_width_px),
+            screen_h=float(args.screen_height_px),
+            window_size_s=args.window_size_sec,
+            stride_s=args.stride_sec,
         )
 
         n_files += 1
@@ -1065,12 +1157,8 @@ def main() -> None:
     ap.add_argument("--base_path", help="Base path containing date/client/task/.../eye-tracking.csv")
     ap.add_argument("--output_base_path", help="Base path to write JSONs into")
 
-    # 공통 옵션
-    ap.add_argument("--pi_excel", default="Primitive Indicator_eye.xlsx")
-    ap.add_argument("--pi_sheet", default="eye-tracking")
-
-    ap.add_argument("--window_size", type=float, default=DEFAULT_WINDOW_SIZE_S, help="seconds")
-    ap.add_argument("--stride", type=float, default=DEFAULT_STRIDE_S, help="seconds")
+    ap.add_argument("--window_size_sec", type=float, default=DEFAULT_WINDOW_SIZE_S, help="seconds")
+    ap.add_argument("--stride_sec", type=float, default=DEFAULT_STRIDE_S, help="seconds")
 
     # 단일 모드에서만 직접 주입하는 메타데이터 (배치 모드에서는 경로에서 뽑음)
     ap.add_argument("--client_id", default="client_001")
@@ -1078,8 +1166,8 @@ def main() -> None:
     ap.add_argument("--sensor_modality", default="eye-tracking")
     ap.add_argument("--timezone", default="Asia/Seoul")
 
-    ap.add_argument("--screen_width", type=float, default=DEFAULT_SCREEN_WIDTH)
-    ap.add_argument("--screen_height", type=float, default=DEFAULT_SCREEN_HEIGHT)
+    ap.add_argument("--screen_width_px", type=float, default=DEFAULT_SCREEN_WIDTH)
+    ap.add_argument("--screen_height_px", type=float, default=DEFAULT_SCREEN_HEIGHT)
 
     # ★ 특정 client만 돌리고 싶을 때: --clients clientA clientB ...
     ap.add_argument(
@@ -1101,12 +1189,10 @@ def main() -> None:
             context=args.context,
             sensor_modality=args.sensor_modality,
             timezone_name=args.timezone,
-            screen_w=float(args.screen_width),
-            screen_h=float(args.screen_height),
-            pi_excel=args.pi_excel,
-            pi_sheet=args.pi_sheet,
-            window_size_s=args.window_size,
-            stride_s=args.stride,
+            screen_w=float(args.screen_width_px),
+            screen_h=float(args.screen_height_px),
+            window_size_s=args.window_size_sec,
+            stride_s=args.stride_sec,
         )
         return
 
